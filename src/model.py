@@ -1,100 +1,43 @@
-"""
-Brain Tumor CNN Model for Multi-class Classification
-
-This module implements a Convolutional Neural Network (CNN) for classifying
-brain tumor MRI images into 4 categories.
-"""
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
-class BrainTumorCNN(nn.Module):
-    """
-    Convolutional Neural Network for Brain Tumor Classification
-    
-    Architecture designed for 3-channel 128x128 input images
-    Output: 4 classes (tumor types)
-    """
-    
+class CustomCNN(nn.Module):
+    """A custom Convolutional Neural Network for image classification."""
     def __init__(self, num_classes=4):
-        super(BrainTumorCNN, self).__init__()
+        super(CustomCNN, self).__init__()
+        # Convolutional Layer 1
+        self.conv1 = nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3, padding=1)
+        # Convolutional Layer 2
+        self.conv2 = nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, padding=1)
+        # Convolutional Layer 3
+        self.conv3 = nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, padding=1)
         
-        # First convolutional block
-        self.conv1 = nn.Conv2d(3, 32, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm2d(32)
-        self.pool1 = nn.MaxPool2d(2, 2)  # 128x128 -> 64x64
+        # Max Pooling Layer
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
         
-        # Second convolutional block
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.bn2 = nn.BatchNorm2d(64)
-        self.pool2 = nn.MaxPool2d(2, 2)  # 64x64 -> 32x32
+        # Fully Connected Layers
+        # The input features depend on the output size of the last conv/pool layer
+        # Image size 128x128 -> pool -> 64x64 -> pool -> 32x32 -> pool -> 16x16
+        # So, the flattened size is 128 * 16 * 16
+        self.fc1 = nn.Linear(128 * 16 * 16, 512)
+        self.fc2 = nn.Linear(512, num_classes)
         
-        # Third convolutional block
-        self.conv3 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
-        self.bn3 = nn.BatchNorm2d(128)
-        self.pool3 = nn.MaxPool2d(2, 2)  # 32x32 -> 16x16
-        
-        # Fourth convolutional block
-        self.conv4 = nn.Conv2d(128, 256, kernel_size=3, padding=1)
-        self.bn4 = nn.BatchNorm2d(256)
-        self.pool4 = nn.MaxPool2d(2, 2)  # 16x16 -> 8x8
-        
-        # Adaptive pooling to handle any input size variations
-        self.adaptive_pool = nn.AdaptiveAvgPool2d((4, 4))
-        
-        # Fully connected layers
-        self.fc1 = nn.Linear(256 * 4 * 4, 512)
-        self.dropout1 = nn.Dropout(0.5)
-        self.fc2 = nn.Linear(512, 128)
-        self.dropout2 = nn.Dropout(0.3)
-        self.fc3 = nn.Linear(128, num_classes)
-        
+        # Dropout Layer
+        self.dropout = nn.Dropout(0.5)
+
     def forward(self, x):
-        """
-        Forward pass through the network
+        # Convolutional layers with ReLU and pooling
+        x = self.pool(F.relu(self.conv1(x)))
+        x = self.pool(F.relu(self.conv2(x)))
+        x = self.pool(F.relu(self.conv3(x)))
         
-        Args:
-            x (torch.Tensor): Input tensor of shape (batch_size, 3, 128, 128)
-            
-        Returns:
-            torch.Tensor: Output logits of shape (batch_size, num_classes)
-        """
-        # First conv block
-        x = self.pool1(F.relu(self.bn1(self.conv1(x))))
+        # Flatten the image for the fully connected layer
+        x = x.view(-1, 128 * 16 * 16)
         
-        # Second conv block
-        x = self.pool2(F.relu(self.bn2(self.conv2(x))))
-        
-        # Third conv block
-        x = self.pool3(F.relu(self.bn3(self.conv3(x))))
-        
-        # Fourth conv block
-        x = self.pool4(F.relu(self.bn4(self.conv4(x))))
-        
-        # Adaptive pooling
-        x = self.adaptive_pool(x)
-        
-        # Flatten for fully connected layers
-        x = x.view(x.size(0), -1)
-        
-        # Fully connected layers
-        x = self.dropout1(F.relu(self.fc1(x)))
-        x = self.dropout2(F.relu(self.fc2(x)))
-        x = self.fc3(x)
+        # Fully connected layers with ReLU and dropout
+        x = F.relu(self.fc1(x))
+        x = self.dropout(x)
+        x = self.fc2(x) # No activation here, as CrossEntropyLoss will apply it
         
         return x
-    
-    def get_model_summary(self):
-        """
-        Returns a summary of the model architecture
-        """
-        total_params = sum(p.numel() for p in self.parameters())
-        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
-        
-        return {
-            'total_parameters': total_params,
-            'trainable_parameters': trainable_params,
-            'model_size_mb': total_params * 4 / (1024 * 1024)  # Assuming float32
-        }
