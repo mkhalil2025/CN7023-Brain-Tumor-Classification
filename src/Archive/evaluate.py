@@ -4,7 +4,7 @@ from sklearn.metrics import classification_report
 import pandas as pd
 
 from dataset import get_dataloaders
-from model import CustomCNN
+from custom_cnn_model import CustomCNN
 
 def evaluate():
     """

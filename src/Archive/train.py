@@ -5,7 +5,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 import pandas as pd
 from dataset import get_dataloaders
-from model import CustomCNN
+from custom_cnn_model import CustomCNN
 
 
 def main():
