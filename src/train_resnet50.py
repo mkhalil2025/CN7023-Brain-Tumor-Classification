@@ -1,141 +1,141 @@
+import sys
+import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
 from torchvision import transforms
-import os
-import copy
 from tqdm import tqdm
+import matplotlib.pyplot as plt
 
-# Assuming your custom dataset is in a file named 'dataset.py'
-# You may need to adjust the import if your file structure is different
-from dataset import BrainTumorDataset
-from resnet50_model import create_resnet50_model
+# --- Path Correction ---
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
-# --- Configuration ---
-# Paths
-DATA_DIR = '../data'
-TRAIN_DIR = os.path.join(DATA_DIR, 'train')
-VAL_DIR = os.path.join(DATA_DIR, 'validation')
-MODEL_SAVE_PATH = 'resnet50_brain_tumor_classifier.pth'
+# --- Imports ---
+from src.dataset import get_dataloaders
+from src.resnet50_model import create_resnet50_model
 
-# Hyperparameters
-NUM_CLASSES = 4
-BATCH_SIZE = 32
-NUM_EPOCHS = 25 # Start with a reasonable number, can be adjusted
-LEARNING_RATE = 0.001
 
-# --- Data Transformations ---
-# Pre-trained models expect specific input transformations
-# 1. Resize images to 224x224
-# 2. Normalize using ImageNet mean and standard deviation
-data_transforms = {
-    'train': transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomRotation(10),
-        transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-    ]),
-    'val': transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-    ]),
-}
+def main():
+    # --- Configuration ---
+    DATA_DIR = '../data'
+    RESULTS_DIR = 'results'
+    BATCH_SIZE = 32
+    NUM_CLASSES = 4
+    IMG_SIZE = 224
+    NUM_EPOCHS = 25
+    LEARNING_RATE = 0.001
+    VAL_SPLIT = 0.2  # Define the validation split percentage
 
-# --- Datasets and DataLoaders ---
-print("Loading datasets...")
-image_datasets = {
-    'train': BrainTumorDataset(root_dir=TRAIN_DIR, transform=data_transforms['train']),
-    'val': BrainTumorDataset(root_dir=VAL_DIR, transform=data_transforms['val'])
-}
+    # --- Setup ---
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
 
-dataloaders = {
-    'train': DataLoader(image_datasets['train'], batch_size=BATCH_SIZE, shuffle=True, num_workers=4),
-    'val': DataLoader(image_datasets['val'], batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
-}
+    # --- Data Transformations ---
+    data_transforms = {
+        'train': transforms.Compose([
+            transforms.RandomResizedCrop(IMG_SIZE),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        ]),
+        'val': transforms.Compose([
+            transforms.Resize(256),
+            transforms.CenterCrop(IMG_SIZE),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        ]),
+    }
 
-dataset_sizes = {x: len(image_datasets[x]) for x in ['train', 'val']}
-class_names = image_datasets['train'].classes
-print(f"Class names: {class_names}")
-print(f"Training set size: {dataset_sizes['train']}, Validation set size: {dataset_sizes['val']}")
+    # --- Data Loaders ---
+    print("Loading datasets...")
+    # --- THE FIX IS HERE ---
+    # Added the required 'val_split' argument to the function call.
+    train_loader, val_loader, _ = get_dataloaders(
+        DATA_DIR,
+        batch_size=BATCH_SIZE,
+        transform=data_transforms,
+        val_split=VAL_SPLIT  # Pass the validation split value
+    )
 
-# --- Model, Loss, and Optimizer ---
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
+    # --- Model, Optimizer, Loss ---
+    model = create_resnet50_model(num_classes=NUM_CLASSES)
+    model.to(device)
 
-model = create_resnet50_model(num_classes=NUM_CLASSES)
-model = model.to(device)
+    optimizer = optim.Adam(model.fc.parameters(), lr=LEARNING_RATE)
+    criterion = nn.CrossEntropyLoss()
 
-criterion = nn.CrossEntropyLoss()
+    # --- Training Loop ---
+    best_val_accuracy = 0.0
+    best_model_path = os.path.join(RESULTS_DIR, 'resnet50_best_model.pth')
 
-# We only want to optimize the parameters of the new classifier head
-optimizer = optim.Adam(model.fc.parameters(), lr=LEARNING_RATE)
+    history = {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': []}
 
-# --- Training Loop ---
-def train_model(model, criterion, optimizer, num_epochs=25):
-    best_model_wts = copy.deepcopy(model.state_dict())
-    best_acc = 0.0
+    print("\nStarting ResNet-50 model training...")
+    for epoch in range(NUM_EPOCHS):
+        # Training Phase
+        model.train()
+        running_loss = 0.0
+        correct_predictions = 0
+        total_samples = 0
 
-    for epoch in range(num_epochs):
-        print(f'Epoch {epoch+1}/{num_epochs}')
-        print('-' * 10)
+        for inputs, labels in tqdm(train_loader, desc=f"Epoch {epoch + 1}/{NUM_EPOCHS} [Train]"):
+            inputs, labels = inputs.to(device), labels.to(device)
 
-        # Each epoch has a training and validation phase
-        for phase in ['train', 'val']:
-            if phase == 'train':
-                model.train()  # Set model to training mode
-            else:
-                model.eval()   # Set model to evaluate mode
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
 
-            running_loss = 0.0
-            running_corrects = 0
+            running_loss += loss.item() * inputs.size(0)
+            _, preds = torch.max(outputs, 1)
+            correct_predictions += torch.sum(preds == labels.data)
+            total_samples += labels.size(0)
 
-            # Iterate over data
-            for inputs, labels in tqdm(dataloaders[phase], desc=f"{phase} phase"):
-                inputs = inputs.to(device)
-                labels = labels.to(device)
+        epoch_train_loss = running_loss / total_samples
+        epoch_train_acc = correct_predictions.double() / total_samples
+        history['train_loss'].append(epoch_train_loss)
+        history['train_acc'].append(epoch_train_acc.item())
 
-                # Zero the parameter gradients
-                optimizer.zero_grad()
+        # Validation Phase
+        model.eval()
+        running_loss = 0.0
+        correct_predictions = 0
+        total_samples = 0
 
-                # Forward pass
-                # Track history only in train
-                with torch.set_grad_enabled(phase == 'train'):
-                    outputs = model(inputs)
-                    _, preds = torch.max(outputs, 1)
-                    loss = criterion(outputs, labels)
+        with torch.no_grad():
+            for inputs, labels in tqdm(val_loader, desc=f"Epoch {epoch + 1}/{NUM_EPOCHS} [Val]"):
+                inputs, labels = inputs.to(device), labels.to(device)
 
-                    # Backward + optimize only if in training phase
-                    if phase == 'train':
-                        loss.backward()
-                        optimizer.step()
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
 
-                # Statistics
                 running_loss += loss.item() * inputs.size(0)
-                running_corrects += torch.sum(preds == labels.data)
+                _, preds = torch.max(outputs, 1)
+                correct_predictions += torch.sum(preds == labels.data)
+                total_samples += labels.size(0)
 
-            epoch_loss = running_loss / dataset_sizes[phase]
-            epoch_acc = running_corrects.double() / dataset_sizes[phase]
+        epoch_val_loss = running_loss / total_samples
+        epoch_val_acc = correct_predictions.double() / total_samples
+        history['val_loss'].append(epoch_val_loss)
+        history['val_acc'].append(epoch_val_acc.item())
 
-            print(f'{phase} Loss: {epoch_loss:.4f} Acc: {epoch_acc:.4f}')
+        print(f"Epoch {epoch + 1}/{NUM_EPOCHS} -> "
+              f"Train Loss: {epoch_train_loss:.4f}, Train Acc: {epoch_train_acc:.4f} | "
+              f"Val Loss: {epoch_val_loss:.4f}, Val Acc: {epoch_val_acc:.4f}")
 
-            # Deep copy the model if it's the best one so far
-            if phase == 'val' and epoch_acc > best_acc:
-                best_acc = epoch_acc
-                best_model_wts = copy.deepcopy(model.state_dict())
-                torch.save(model.state_dict(), MODEL_SAVE_PATH)
-                print(f"Validation accuracy improved. Model saved to {MODEL_SAVE_PATH}")
+        # Save the best model
+        if epoch_val_acc > best_val_accuracy:
+            best_val_accuracy = epoch_val_acc
+            torch.save(model.state_dict(), best_model_path)
+            print(f"✅ New best model saved with validation accuracy: {best_val_accuracy:.4f}")
 
+    print("\n--- Training Finished ---")
+    print(f"Best model saved to {best_model_path} with accuracy: {best_val_accuracy:.4f}")
 
-    print(f'\nBest val Acc: {best_acc:4f}')
-
-    # Load best model weights
-    model.load_state_dict(best_model_wts)
-    return model
 
 if __name__ == '__main__':
-    print("Starting model training...")
-    trained_model = train_model(model, criterion, optimizer, num_epochs=NUM_EPOCHS)
-    print("Training complete.")
+    main()

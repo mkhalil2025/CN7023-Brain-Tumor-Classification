@@ -1,113 +1,111 @@
 import torch
-from torch.utils.data import DataLoader
 from torchvision import transforms
-import os
-from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.metrics import confusion_matrix, classification_report
+import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
-import numpy as np
+import os
 from tqdm import tqdm
 
-# --- IMPORTANT ---
-# You will need to import your custom CNN model's class here.
-# For example, if your model is in 'custom_cnn_model.py' and the class is named 'CustomCNN':
-# from custom_cnn_model import CustomCNN
-#
-# Replace 'CustomCNN' below with the actual name of your model class.
-# If the file is named differently, adjust the import accordingly.
-from custom_cnn_model import CustomCNN  # <--- PLEASE VERIFY THIS LINE
+# Import our project-specific modules
+from dataset import get_dataloaders
+from custom_cnn_model import CustomCNN
 
-# --- Configuration ---
-# Paths
-DATA_DIR = 'data/'
-TEST_DIR = os.path.join(DATA_DIR, 'test')
-# Make sure this path points to your trained custom CNN model weights
-MODEL_PATH = 'custom_cnn_model.pth' # <--- PLEASE VERIFY THIS FILENAME
 
-# Output files
-CONFUSION_MATRIX_FILE = 'custom_cnn_confusion_matrix.png'
-CLASSIFICATION_REPORT_FILE = 'custom_cnn_classification_report.txt'
+def main():
+    """Main function to run the evaluation."""
+    # --- Configuration ---
+    DATA_DIR = '../data'
+    RESULTS_DIR = 'results'
+    BATCH_SIZE = 32
+    NUM_CLASSES = 4
+    IMG_SIZE = 200
+    MODEL_PATH = os.path.join(RESULTS_DIR, 'custom_cnn_best_model.pth')
 
-# Parameters
-NUM_CLASSES = 4
-BATCH_SIZE = 32
+    # --- Setup ---
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
 
-# --- Data Transformations for Custom CNN ---
-# These should match the transformations you originally used for your custom model
-eval_transform = transforms.Compose([
-    transforms.Resize((200, 200)), # Assuming 200x200 for your custom model
-    transforms.ToTensor(),
-])
+    # --- Data Transformations ---
+    data_transforms = {
+        'val': transforms.Compose([
+            transforms.Resize((IMG_SIZE, IMG_SIZE)),
+            transforms.ToTensor(),
+        ])
+    }
 
-# --- Dataset and DataLoader ---
-# Assuming you use the same BrainTumorDataset class
-from dataset import BrainTumorDataset
+    # --- Get Test Loader ---
+    print("Loading test dataset...")
+    try:
+        _, _, test_loader = get_dataloaders(
+            DATA_DIR,
+            batch_size=BATCH_SIZE,
+            val_split=0.2,
+            transform={'train': None, 'val': data_transforms['val']}
+        )
+        print(f"Test set size: {len(test_loader.dataset)}")
+    except FileNotFoundError as e:
+        print(f"Error loading data: {e}")
+        return
 
-print("Loading test dataset...")
-test_dataset = BrainTumorDataset(root_dir=TEST_DIR, transform=eval_transform)
-test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
+    # --- Load Model ---
+    if not os.path.exists(MODEL_PATH):
+        print(f"[ERROR] Model file not found at: {MODEL_PATH}")
+        return
 
-class_names = test_dataset.classes
-print(f"Class names: {class_names}")
-print(f"Test set size: {len(test_dataset)}")
+    model = CustomCNN(num_classes=NUM_CLASSES)
+    model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
+    model.to(device)
+    model.eval()
 
-# --- Model Loading ---
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
+    # --- Evaluation ---
+    print("\nRunning evaluation on the test set for the Custom CNN...")
+    all_preds = []
+    all_labels = []
 
-# Create the model architecture
-# Replace 'CustomCNN' if your class name is different
-model = CustomCNN(num_classes=NUM_CLASSES) # <--- PLEASE VERIFY THIS LINE
+    with torch.no_grad():
+        for inputs, labels in tqdm(test_loader, desc="Evaluating Custom CNN"):
+            inputs = inputs.to(device)
+            labels = labels.to(device)
 
-# Load the saved state dictionary
-model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
-model = model.to(device)
+            outputs = model(inputs)
+            _, preds = torch.max(outputs, 1)
 
-# Set the model to evaluation mode
-model.eval()
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
 
-# --- Evaluation ---
-print("Running evaluation on the test set for the Custom CNN...")
-y_true = []
-y_pred = []
+    # --- Display Results ---
+    class_names = test_loader.dataset.classes
+    # A small fix to ensure class names are consistent, e.g., 'notumor' vs 'no_tumor'
+    class_names = [name.replace('notumor', 'no_tumor') for name in class_names]
+    print(f"Class names: {class_names}")
 
-with torch.no_grad():
-    for inputs, labels in tqdm(test_loader, desc="Evaluating Custom CNN"):
-        inputs = inputs.to(device)
-        labels = labels.to(device)
+    print("\n--- Final Test Results ---")
 
-        outputs = model(inputs)
-        _, predicted = torch.max(outputs, 1)
+    # Classification Report
+    report = classification_report(all_labels, all_preds, target_names=class_names, digits=4)
+    print("Classification Report:")
+    print(report)
 
-        y_true.extend(labels.cpu().numpy())
-        y_pred.extend(predicted.cpu().numpy())
+    # Confusion Matrix
+    cm = confusion_matrix(all_labels, all_preds)
+    cm_df = pd.DataFrame(cm, index=class_names, columns=class_names)
+    print("\nConfusion Matrix:")
+    print(cm_df)
 
-# --- Generate and Save Results ---
-print("Generating classification report and confusion matrix for Custom CNN...")
+    # Plot and save Confusion Matrix
+    cm_plot_path = os.path.join(RESULTS_DIR, 'test_results_custom_cnn_confusion_matrix.png')
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(cm_df, annot=True, fmt='d', cmap='Blues')
+    plt.title('Confusion Matrix - Custom CNN on Test Set')
+    plt.ylabel('Actual Label')
+    plt.xlabel('Predicted Label')
+    plt.savefig(cm_plot_path)
+    plt.show()
 
-# 1. Classification Report
-report = classification_report(y_true, y_pred, target_names=class_names, digits=4)
-print("\nClassification Report:")
-print(report)
+    print(f"\nConfusion matrix plot saved to: {cm_plot_path}")
 
-with open(CLASSIFICATION_REPORT_FILE, 'w') as f:
-    f.write("Custom CNN Classification Report\n")
-    f.write("="*30 + "\n")
-    f.write(report)
-print(f"Classification report saved to {CLASSIFICATION_REPORT_FILE}")
 
-# 2. Confusion Matrix
-cm = confusion_matrix(y_true, y_pred)
-plt.figure(figsize=(10, 8))
-sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=class_names, yticklabels=class_names)
-plt.title('Custom CNN Confusion Matrix')
-plt.ylabel('Actual')
-plt.xlabel('Predicted')
-plt.tight_layout()
-
-# Save the figure
-plt.savefig(CONFUSION_MATRIX_FILE)
-print(f"Confusion matrix saved to {CONFUSION_MATRIX_FILE}")
-plt.show()
-
-print("\nCustom CNN evaluation complete.")
+# This is the crucial fix:
+if __name__ == '__main__':
+    main()
